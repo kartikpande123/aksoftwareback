@@ -521,7 +521,496 @@ app.delete("/api/student/enrollment/:id", async (req, res) => {
   }
 });
 
+// POST API - Store quote form submissions (for PriceForm)
+app.post("/api/quote", async (req, res) => {
+  try {
+    const { 
+      name, 
+      phone, 
+      email, 
+      other, 
+      specialQuote,
+      selectedPlan,
+      planName,
+      planPrice,
+      planType,
+      services 
+    } = req.body;
 
+    // Validation
+    if (!name || !name.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Name is required",
+      });
+    }
+
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: "Phone number is required",
+      });
+    }
+
+    // Phone number validation (basic)
+    const phoneRegex = /^[+\d\s\-()]{7,15}$/;
+    if (!phoneRegex.test(phone.trim())) {
+      return res.status(400).json({
+        success: false,
+        message: "Enter a valid phone number",
+      });
+    }
+
+    // Email validation (if provided)
+    if (email && email.trim()) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email.trim())) {
+        return res.status(400).json({
+          success: false,
+          message: "Enter a valid email address",
+        });
+      }
+    }
+
+    // Create quote submission object
+    const quoteSubmission = {
+      // Basic contact info
+      name: name.trim(),
+      phone: phone.trim(),
+      email: email && email.trim() ? email.trim() : null,
+      
+      // Quote/requirements info
+      other: other && other.trim() ? other.trim() : null,
+      specialQuote: specialQuote && specialQuote.trim() ? specialQuote.trim() : null,
+      
+      // Selected plan details
+      selectedPlan: selectedPlan || null,
+      planName: planName || null,
+      planPrice: planPrice || null,
+      planType: planType || null, // website, android, custom
+      
+      // Services array (from contact form style)
+      services: services || [],
+      
+      // Metadata
+      timestamp: Date.now(),
+      createdAt: new Date().toISOString(),
+      status: "pending", // pending, contacted, quoted, completed, rejected
+      priority: "normal", // normal, high, urgent
+      
+      // Quote specific fields
+      quoteSent: false,
+      quoteAmount: null,
+      quoteSentDate: null,
+      notes: null,
+    };
+
+    // Generate a unique key for the submission
+    const quoteRef = db.ref("quotes").push();
+    const quoteId = quoteRef.key;
+
+    // Add the ID to the submission object
+    quoteSubmission.id = quoteId;
+
+    // Save to Firebase Realtime Database under "quotes" node
+    await quoteRef.set(quoteSubmission);
+
+    console.log(`New quote submission saved with ID: ${quoteId} - Plan: ${planName || 'Custom'}`);
+
+    res.status(201).json({
+      success: true,
+      message: "Quote request submitted successfully",
+      data: {
+        id: quoteId,
+        name: quoteSubmission.name,
+        phone: quoteSubmission.phone,
+        email: quoteSubmission.email,
+        planName: quoteSubmission.planName,
+        planType: quoteSubmission.planType,
+        timestamp: quoteSubmission.timestamp,
+      },
+    });
+  } catch (error) {
+    console.error("Error saving quote form:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error. Please try again later.",
+    });
+  }
+});
+
+// GET API - Fetch all quote submissions (admin only)
+app.get("/api/quotes", async (req, res) => {
+  try {
+    const snapshot = await db.ref("quotes").once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        message: "No quote requests found",
+      });
+    }
+
+    const data = snapshot.val();
+    
+    // Convert object to array
+    const quotesArray = Object.keys(data).map(key => ({
+      id: key,
+      ...data[key]
+    }));
+
+    // Sort by timestamp descending (newest first)
+    quotesArray.sort((a, b) => b.timestamp - a.timestamp);
+
+    res.status(200).json({
+      success: true,
+      data: quotesArray,
+      count: quotesArray.length,
+    });
+  } catch (error) {
+    console.error("Error fetching quotes:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// GET API - Fetch quotes by status (pending, contacted, quoted, completed, rejected)
+app.get("/api/quotes/status/:status", async (req, res) => {
+  try {
+    const { status } = req.params;
+    const validStatuses = ["pending", "contacted", "quoted", "completed", "rejected"];
+    
+    if (!validStatuses.includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid status. Valid statuses: pending, contacted, quoted, completed, rejected",
+      });
+    }
+
+    const snapshot = await db.ref("quotes").once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        message: "No quote requests found",
+      });
+    }
+
+    const data = snapshot.val();
+    
+    // Filter by status
+    const quotesArray = Object.keys(data)
+      .map(key => ({ id: key, ...data[key] }))
+      .filter(quote => quote.status === status)
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    res.status(200).json({
+      success: true,
+      data: quotesArray,
+      count: quotesArray.length,
+      status: status,
+    });
+  } catch (error) {
+    console.error("Error fetching quotes by status:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// GET API - Fetch quotes by plan type (website, android, custom)
+app.get("/api/quotes/type/:planType", async (req, res) => {
+  try {
+    const { planType } = req.params;
+    const validTypes = ["website", "android", "custom"];
+    
+    if (!validTypes.includes(planType)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid plan type. Valid types: website, android, custom",
+      });
+    }
+
+    const snapshot = await db.ref("quotes").once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(200).json({
+        success: true,
+        data: [],
+        message: "No quote requests found",
+      });
+    }
+
+    const data = snapshot.val();
+    
+    // Filter by plan type
+    const quotesArray = Object.keys(data)
+      .map(key => ({ id: key, ...data[key] }))
+      .filter(quote => quote.planType === planType)
+      .sort((a, b) => b.timestamp - a.timestamp);
+
+    res.status(200).json({
+      success: true,
+      data: quotesArray,
+      count: quotesArray.length,
+      planType: planType,
+    });
+  } catch (error) {
+    console.error("Error fetching quotes by plan type:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// GET API - Fetch single quote submission by ID
+app.get("/api/quote/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const snapshot = await db.ref(`quotes/${id}`).once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "Quote submission not found",
+      });
+    }
+
+    const data = snapshot.val();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        id,
+        ...data
+      },
+    });
+  } catch (error) {
+    console.error("Error fetching quote:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// PUT API - Update quote submission status and details (admin only)
+app.put("/api/quote/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { 
+      status, 
+      priority,
+      notes, 
+      quoteAmount,
+      quoteSent,
+      quoteSentDate 
+    } = req.body;
+
+    const quoteRef = db.ref(`quotes/${id}`);
+    const snapshot = await quoteRef.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "Quote submission not found",
+      });
+    }
+
+    const updateData = {};
+    
+    // Update status if provided
+    if (status) {
+      const validStatuses = ["pending", "contacted", "quoted", "completed", "rejected"];
+      if (validStatuses.includes(status)) {
+        updateData.status = status;
+      }
+    }
+    
+    // Update priority if provided
+    if (priority) {
+      const validPriorities = ["normal", "high", "urgent"];
+      if (validPriorities.includes(priority)) {
+        updateData.priority = priority;
+      }
+    }
+    
+    // Update other fields
+    if (notes) updateData.notes = notes;
+    if (quoteAmount !== undefined) updateData.quoteAmount = quoteAmount;
+    if (quoteSent !== undefined) updateData.quoteSent = quoteSent;
+    if (quoteSentDate) updateData.quoteSentDate = quoteSentDate;
+    
+    // Add updated timestamp
+    updateData.updatedAt = new Date().toISOString();
+
+    // If status is changed to quoted and quoteSent is true, add quote sent date
+    if (status === "quoted" && !quoteSentDate) {
+      updateData.quoteSent = true;
+      updateData.quoteSentDate = new Date().toISOString();
+    }
+
+    await quoteRef.update(updateData);
+
+    res.status(200).json({
+      success: true,
+      message: "Quote submission updated successfully",
+    });
+  } catch (error) {
+    console.error("Error updating quote:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// PUT API - Mark quote as quoted (send quote to client)
+app.put("/api/quote/:id/send-quote", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { quoteAmount, notes } = req.body;
+
+    const quoteRef = db.ref(`quotes/${id}`);
+    const snapshot = await quoteRef.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "Quote submission not found",
+      });
+    }
+
+    const updateData = {
+      status: "quoted",
+      quoteSent: true,
+      quoteSentDate: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (quoteAmount !== undefined) updateData.quoteAmount = quoteAmount;
+    if (notes) updateData.notes = notes;
+
+    await quoteRef.update(updateData);
+
+    res.status(200).json({
+      success: true,
+      message: "Quote sent successfully",
+    });
+  } catch (error) {
+    console.error("Error sending quote:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// DELETE API - Delete quote submission (admin only)
+app.delete("/api/quote/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const quoteRef = db.ref(`quotes/${id}`);
+    const snapshot = await quoteRef.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "Quote submission not found",
+      });
+    }
+
+    await quoteRef.remove();
+
+    res.status(200).json({
+      success: true,
+      message: "Quote submission deleted successfully",
+    });
+  } catch (error) {
+    console.error("Error deleting quote:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
+
+// GET API - Dashboard statistics for quotes
+app.get("/api/quotes/stats", async (req, res) => {
+  try {
+    const snapshot = await db.ref("quotes").once("value");
+
+    const stats = {
+      total: 0,
+      pending: 0,
+      contacted: 0,
+      quoted: 0,
+      completed: 0,
+      rejected: 0,
+      byPlanType: {
+        website: 0,
+        android: 0,
+        custom: 0,
+      },
+      byPriority: {
+        normal: 0,
+        high: 0,
+        urgent: 0,
+      },
+      totalQuoteAmount: 0,
+    };
+
+    if (snapshot.exists()) {
+      const data = snapshot.val();
+      
+      Object.values(data).forEach(quote => {
+        // Count by status
+        stats.total++;
+        switch (quote.status) {
+          case "pending": stats.pending++; break;
+          case "contacted": stats.contacted++; break;
+          case "quoted": stats.quoted++; break;
+          case "completed": stats.completed++; break;
+          case "rejected": stats.rejected++; break;
+        }
+        
+        // Count by plan type
+        if (quote.planType && stats.byPlanType[quote.planType] !== undefined) {
+          stats.byPlanType[quote.planType]++;
+        }
+        
+        // Count by priority
+        if (quote.priority && stats.byPriority[quote.priority] !== undefined) {
+          stats.byPriority[quote.priority]++;
+        }
+        
+        // Sum quote amounts
+        if (quote.quoteAmount && typeof quote.quoteAmount === 'number') {
+          stats.totalQuoteAmount += quote.quoteAmount;
+        }
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: stats,
+    });
+  } catch (error) {
+    console.error("Error fetching quote stats:", error);
+    res.status(500).json({
+      success: false,
+      message: "Server error",
+    });
+  }
+});
 
 app.listen(port, () => {
     console.log(`Port started on http://localhost:${port}`);
