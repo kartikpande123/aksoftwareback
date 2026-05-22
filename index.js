@@ -1,6 +1,6 @@
 import express from "express"
 const app = express();
-const port = 2002;
+const port = 3002;
 import cors from "cors";
 // const admin = require("./db/firebaseConfig").firebaseAdmin;
 import admin from "./db/firebaseConfig.js";
